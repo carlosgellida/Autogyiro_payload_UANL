@@ -10,16 +10,23 @@ const byte masterAddress[5] = {'T','X','a','a','a'};
 
 unsigned long currentMillis;
 unsigned long prevMillis;
-unsigned long txIntervalMillis = 10;
+unsigned long txIntervalMillis = 100;//doesnt matter. dont change
+
+struct package {
+  int id = 1;
+  float temperature = 18.3;
+  char  text[300] = "Text to be transmit";
+  int recibido = 0; 
+};
 
 float time1, time2; 
 
-float quaternion2[5] ; //= {1, 2, 3, 6, 10}; 
+float quaternion2[5] = {1, 2, 3, 6, 10}; 
 float quaternion[5] = {1, 1.0, 2.0, 3.0, 6.1}; 
 
-//typedef struct package Package;
-//Package dataRecieve;
-//Package dataTransmit;
+typedef struct package Package;
+Package dataRecieve;
+Package dataTransmit;
 
 void send(bool recieved){
   bool sended = false; 
@@ -27,10 +34,8 @@ void send(bool recieved){
   if(recieved){
   Serial.println("Program is here!"); 
   myRadio.stopListening();
-  float time = float(micros()); 
-  sended = myRadio.write(&quaternion, sizeof(quaternion)); 
-  Serial.print("time to send: "); 
-  Serial.println(float(micros()) - time); 
+  //myRadio.begin(); 
+  sended = myRadio.writeFast(&quaternion, sizeof(quaternion)); 
   myRadio.startListening(); 
   }
 
@@ -42,14 +47,12 @@ void send(bool recieved){
 
 bool getData(void){
   bool recieved = false; 
-  //Serial.println("Program is listening"); 
   if ( myRadio.available()) {
-      myRadio.read(&quaternion2, sizeof(quaternion2) );
+      myRadio.read( &quaternion2, sizeof(quaternion2) );
       Serial.println("Recieve: ");
       recieved = true; 
   }
   return recieved; 
-
 }
 
 void showData(bool recieved){
@@ -63,21 +66,13 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  bool radioWorks = myRadio.begin(); 
-  if(radioWorks){
-    Serial.println("Radio is working"); 
-  }else{
-    Serial.println("Radio doesn't Work");
-    while(true){
-      //keep device in a loop to avoid problems
-    }
-  }
+  myRadio.begin();  
   myRadio.setPALevel(RF24_PA_MAX);
-  myRadio.setDataRate(RF24_2MBPS); 
+  myRadio.setDataRate(RF24_1MBPS); 
   myRadio.openWritingPipe(masterAddress);
   myRadio.openReadingPipe(1, slaveAddress);
-  //myRadio.setChannel(115); 
-  myRadio.setRetries(3, 5);
+  myRadio.setChannel(100); 
+  myRadio.setRetries(5, 10);
   myRadio.startListening();
   prevMillis = millis();//doesnt matter. dont change
 }
