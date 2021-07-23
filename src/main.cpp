@@ -1,127 +1,135 @@
-#include "I2Cdev.h"
-#include "MPU6050_6Axis_MotionApps20.h"
 #include <Arduino.h>  
 #include <ESP32Servo.h>
 #include <SPI.h> 
 #include "RF24.h"
-//#include <MPU_personalized_functions.h>
+#include <MPU_personalized_functions.h>
 
-#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-    #include "Wire.h"
-#endif
+float time_passed ; 
 
-MPU6050 mpu;
+RF24 myRadio (14, 12);
 
+Servo blMotor ;  //Motor brusless
+Servo servo1 ; 
+Servo servo2 ; 
+Servo servo3 ; 
 
-// MPU control/status vars
-bool dmpReady = false;  // set true if DMP init was successful
-uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
-uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
-uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
-uint16_t fifoCount;     // count of all bytes currently in FIFO
-uint8_t fifoBuffer[64]; // FIFO storage buffer
+const byte slaveAddress[5] = {'R','x','A','A','A'};
+const byte masterAddress[5] = {'T','X','a','a','a'};
 
-float time_passed = micros() ; 
+unsigned long currentMillis;
+unsigned long prevMillis;
+unsigned long txIntervalMillis = 10;
 
-// orientation/motion vars
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorInt16 aa;         // [x, y, z]            accel sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+Quaternion2 desiredQuat ; 
+Quaternion2 currentQuat ; 
 
-// packet structure for InvenSense teapot demo
-uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
+Matrix<4, 1> currentQuatArr ; 
+Matrix<3, 1> desMoment; // Desired moment of force
 
+void send(void){
+  bool sended = false; 
+  
+  mpu.dmpGetQuaternion(&q, fifoBuffer);
 
-// ================================================================
-// ===                      INITIAL SETUP                       ===
-// ================================================================
+  //currentQuatArr = quatProduct(giro90Y(), arrMod(quat2arr(q)) ) ; // Fix the quaternion
 
-void setup() {
-    // join I2C bus (I2Cdev library doesn't do this automatically)
-    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-        Wire.begin();
-        //Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
-    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
-        Fastwire::setup(400, true);
-    #endif
+  currentQuatArr = arrMod(quat2arr(q)); 
+  currentQuat = arr2Struc(currentQuatArr); //became it an structure
 
-    Serial.begin(115200);
+  myRadio.stopListening(); 
+  sended = myRadio.write(&currentQuat, sizeof(currentQuat));
+  myRadio.startListening(); 
 
-    // initialize device
-    Serial.println(F("Initializing I2C devices..."));
-    mpu.initialize();
+  /*if(sended){
+    printQuat(currentQuat); 
+  }*/
+} 
 
-    // verify connection
-    Serial.println(F("Testing device connections..."));
-    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+bool getData(void){
+  bool recieved = false; 
+  if ( myRadio.available()) {
+    //Serial.println("Mesaje available!!!"); 
+    myRadio.read( &desiredQuat, sizeof(desiredQuat) );
+    recieved = true; 
+  } 
+  return recieved; 
+}
 
-    // load and configure the DMP
-    Serial.println(F("Initializing DMP..."));
-    devStatus = mpu.dmpInitialize();
+void showData(bool recieved){
+  // If the info from joystick was recieved this 
+  // functions shows the desired quaternion
+  if(recieved){
+    Serial.print("Desired quaternion (qw qx qy qz): "); 
+    printQuat(desiredQuat); 
+  }
+}
 
-    // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(220);
-    mpu.setYGyroOffset(76);
-    mpu.setZGyroOffset(-85);
-    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
-
-    // make sure it worked (returns 0 if so)
-    if (devStatus == 0) {
-        // Calibration Time: generate offsets and calibrate our MPU6050
-        mpu.CalibrateAccel(6);
-        mpu.CalibrateGyro(6);
-        mpu.PrintActiveOffsets();
-        // turn on the DMP, now that it's ready
-        Serial.println(F("Enabling DMP..."));
-        mpu.setDMPEnabled(true);
-
-        mpuIntStatus = mpu.getIntStatus();
-
-        // set our DMP Ready flag so the main loop() function knows it's okay to use it
-        Serial.println(F("DMP ready! Waiting for first interrupt..."));
-        dmpReady = true;
-
-        // get expected DMP packet size for later comparison
-        packetSize = mpu.dmpGetFIFOPacketSize();
-    } else {
-        // ERROR!
-        // 1 = initial memory load failed
-        // 2 = DMP configuration updates failed
-        // (if it's going to break, usually the code will be 1)
-        Serial.print(F("DMP Initialization failed (code "));
-        Serial.print(devStatus);
-        Serial.println(F(")"));
-    }
-    time_passed = float(micros()); 
+void controlAlg(void){
+    //This function apply a PD control to generates the desired 
+    // moment of force 
+    Matrix<4, 1> AxisAng = quat2AxisAng(quat2arr2(desiredQuat)); 
+    Serial << "AxisAng: " << AxisAng << "\n"; 
+    Matrix<3, 1> Axis = AxisAng.Submatrix(Slice<1, 4>(), Slice<0, 1>()) ; 
+    float Kp = 1 ; // Proportionallity matrix 
+    desMoment = escProd(Kp * AxisAng(0, 0), Axis); 
 }
 
 
+void setup() {
 
-// ================================================================
-// ===                    MAIN PROGRAM LOOP                     ===
-// ================================================================
+  blMotor.attach(2) ; //Motor brusless
+  servo1.attach(25) ; 
+  servo2.attach(26) ;
+  servo3.attach(27) ; 
+  blMotor.write(40) ; // Mantiene al motor apagado
+  servo1.write(90); 
+  servo2.write(90); 
+  servo3.write(90); 
+
+  Serial.begin(115200);
+
+  delay(500);
+
+  bool radioWorks = myRadio.begin(); 
+  if(radioWorks){
+    Serial.println("Radio is working"); 
+  }else{
+    Serial.println("Radio doesn't Work");
+    while(true){
+      //keep device in a loop to avoid problems
+    }
+  } 
+  myRadio.setPALevel(RF24_PA_MAX); 
+  myRadio.setDataRate(RF24_2MBPS); 
+  myRadio.openWritingPipe(slaveAddress);
+  myRadio.openReadingPipe(1, masterAddress);
+  //myRadio.setChannel(115); 	
+  myRadio.setRetries(1,3);
+  myRadio.powerUp() ; 
+  myRadio.startListening();
+
+  delay(500) ; 
+
+  initializeMPU6050(mpu) ; 
+    
+  time_passed = float(micros()); 
+}
+
+
 
 void loop() {
     // if programming failed, don't try to do anything
     if (!dmpReady) return;
     // read a packet from FIFO
-    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet 
-            // display quaternion values in easy matrix form: w x y z
-        Serial.print("time: "); 
-        Serial.print(float(micros()) - time_passed); 
-        time_passed = float(micros()); 
-        mpu.dmpGetQuaternion(&q, fifoBuffer);
-        Serial.print(" quat\t");
-        Serial.print(q.w);
-        Serial.print("\t");
-        Serial.print(q.x);
-        Serial.print("\t");
-        Serial.print(q.y);
-        Serial.print("\t");
-        Serial.println(q.z);
-    }
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { 
+        //This function will be available each 10ms
+        micros() ; 
+        send(); 
+        printQuat(desiredQuat) ; 
+        controlAlg();
+        Serial << "Desired moment: (x, y, z) " << desMoment << "\n" ; 
+    } 
+
+
+    getData();
 }
