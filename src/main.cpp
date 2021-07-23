@@ -25,6 +25,7 @@ Quaternion2 currentQuat ;
 
 Matrix<4, 1> currentQuatArr ; 
 Matrix<3, 1> desMoment; // Desired moment of force
+Matrix<3, 1> alphas; 
 
 void send(void){
   bool sended = false; 
@@ -67,20 +68,35 @@ void showData(bool recieved){
 void controlAlg(void){
     //This function apply a PD control to generates the desired 
     // moment of force 
-    Matrix<4, 1> AxisAng = quat2AxisAng(quat2arr2(desiredQuat)); 
-    Serial << "AxisAng: " << AxisAng << "\n"; 
+    Matrix<4, 1> errorQuat = quatProduct(compQuat(currentQuatArr), quat2arr2(desiredQuat)); 
+    Matrix<4, 1> AxisAng = quat2AxisAng(errorQuat); 
     Matrix<3, 1> Axis = AxisAng.Submatrix(Slice<1, 4>(), Slice<0, 1>()) ; 
     float Kp = 1 ; // Proportionallity matrix 
     desMoment = escProd(Kp * AxisAng(0, 0), Axis); 
+}
+
+void actuatorsImput(void){
+    float c = 0.008 ; 
+    Matrix<3, 3> imputMatInv = {-6.666, 0, -7.8125, -3.397, 2.381, -0.744, 3.9683, -2.3810, 8.5565}; 
+    alphas = escProd(1/c, imputMatInv*desMoment); 
+    if(alphas(0, 0) > 20){alphas(0, 0) = 20; }; 
+    if(alphas(1, 0) > 20){alphas(1, 0) = 20; }; 
+    if(alphas(2, 0) > 20){alphas(2, 0) = 20; }; 
+    if(alphas(0, 0) < -20){alphas(0, 0) = -20; }; 
+    if(alphas(1, 0) < -20){alphas(1, 0) = -20; }; 
+    if(alphas(2, 0) < -20){alphas(2, 0) = -20; }; 
+    servo1.write(90 - round(alphas(0, 0))); 
+    servo2.write(90 - round(alphas(1, 0))); 
+    servo3.write(90 - round(alphas(2, 0))); 
 }
 
 
 void setup() {
 
   blMotor.attach(2) ; //Motor brusless
-  servo1.attach(25) ; 
-  servo2.attach(26) ;
-  servo3.attach(27) ; 
+  servo1.attach(27) ; 
+  servo2.attach(25) ; 
+  servo3.attach(26) ; 
   blMotor.write(40) ; // Mantiene al motor apagado
   servo1.write(90); 
   servo2.write(90); 
@@ -113,6 +129,7 @@ void setup() {
   initializeMPU6050(mpu) ; 
     
   time_passed = float(micros()); 
+
 }
 
 
@@ -125,9 +142,11 @@ void loop() {
         //This function will be available each 10ms
         micros() ; 
         send(); 
-        printQuat(desiredQuat) ; 
+        //printQuat(desiredQuat) ; 
         controlAlg();
-        Serial << "Desired moment: (x, y, z) " << desMoment << "\n" ; 
+        //Serial << "Desired moment: (x, y, z) " << desMoment << "\n" ; 
+        actuatorsImput(); 
+        Serial << "alphas: " << alphas << "\n"; 
     } 
 
 
